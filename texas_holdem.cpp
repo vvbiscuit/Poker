@@ -1,13 +1,16 @@
-// Texas Holdem single player simulation.
+// Texas Holdem two player simulation.
 //
-// The deck is shuffled and the player receives two hole cards. Then the flop
+// The deck is shuffled and both players receive two hole cards. Then the flop
 // (three cards), the turn (fourth card) and the river (fifth card) are dealt.
-// After every betting round the best hand that can be made from the player's
-// hole cards and the community cards is printed again.
+// After every street both players' best hand and the winning chances of the two
+// players are printed again, and at the end the winner or a tie is shown.
 //
-// Every step is driven by the keyboard: the player presses Enter to receive
-// the hole cards and to see the flop, the turn and the river, and types q to
-// leave the program once the hand has been reviewed.
+// The winning chances are exact: every possible way of completing the board is
+// played out and the results are counted, so no sampling error is involved.
+//
+// Every step is driven by the keyboard: pressing Enter receives the hole cards
+// and shows the flop, the turn and the river, and typing q leaves the program
+// once the hand has been reviewed.
 //
 // All output text is English. Suits are shown as spade, heart, diamond and club
 // symbols, ranks use digits and J, Q, K, A, and no Chinese text is printed.
@@ -18,7 +21,6 @@
 #include <iostream>
 #include <random>
 #include <string>
-#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -70,6 +72,7 @@ const char* suitSymbol(Suit suit) {
     }
     return "?";
 }
+
 // Ranks are printed with digits and face card letters: 2 to 10, then J, Q, K, A.
 const char* rankName(Rank rank) {
     switch (rank) {
@@ -101,6 +104,10 @@ const char* rankName(Rank rank) {
             return "A";
     }
     return "Unknown";
+}
+
+int rankOf(const Card& card) {
+    return static_cast<int>(card.rank);
 }
 
 // A card is printed as its rank followed by its suit symbol, for example A
@@ -149,161 +156,139 @@ const char* categoryName(int category) {
     return "Unknown";
 }
 
-struct HandValue {
-    int category = HighCard;
-    // Ranks in comparison order, highest rank first. This resolves ties
-    // between hands of the same category.
-    std::vector<int> tiebreak;
-};
-
-bool isStronger(const HandValue& candidate, const HandValue& current) {
-    if (candidate.category != current.category) {
-        return candidate.category > current.category;
-    }
-    return candidate.tiebreak > current.tiebreak;
+int categoryOf(int score) {
+    return score >> 20;
 }
 
-int rankOf(const Card& card) {
-    return static_cast<int>(card.rank);
-}
-
-// Groups the cards by rank, ordered by group size and then by rank, so that
-// pairs and trips end up in front of the kickers.
-std::vector<std::pair<int, int>> rankGroups(const std::vector<Card>& cards) {
-    std::vector<std::pair<int, int>> groups;
-    for (const Card& card : cards) {
-        const int rank = rankOf(card);
-        auto it = std::find_if(groups.begin(), groups.end(),
-                               [rank](const std::pair<int, int>& group) {
-                                   return group.second == rank;
-                               });
-        if (it != groups.end()) {
-            ++it->first;
-        } else {
-            groups.emplace_back(1, rank);
+// Highest rank of the best straight inside the rank mask, or 0 when there is
+// none. The ace counts as a low card in ace, five, four, three, two.
+int highestStraight(int rankMask) {
+    for (int high = 14; high >= 6; --high) {
+        const int run = (1 << high) | (1 << (high - 1)) | (1 << (high - 2)) |
+                        (1 << (high - 3)) | (1 << (high - 4));
+        if ((rankMask & run) == run) {
+            return high;
         }
     }
-    std::sort(groups.begin(), groups.end(),
-              [](const std::pair<int, int>& lhs, const std::pair<int, int>& rhs) {
-                  if (lhs.first != rhs.first) {
-                      return lhs.first > rhs.first;
-                  }
-                  return lhs.second > rhs.second;
-              });
-    return groups;
+    const int wheel = (1 << 14) | (1 << 5) | (1 << 4) | (1 << 3) | (1 << 2);
+    if ((rankMask & wheel) == wheel) {
+        return 5;
+    }
+    return 0;
 }
 
-// Ranks listed with the grouped ranks first, for example K K K Q Q for a full
-// house or A A K Q J for a pair of aces.
-std::vector<int> comparisonRanks(const std::vector<Card>& cards) {
-    std::vector<int> ranks;
-    for (const std::pair<int, int>& group : rankGroups(cards)) {
-        for (int i = 0; i < group.first; ++i) {
-            ranks.push_back(group.second);
+// Packs a hand into a single number: the category in the high bits and the
+// ranks that break ties in the nibbles below, the most important rank first.
+int packScore(int category, const int* ranks, int count) {
+    int score = category << 20;
+    for (int i = 0; i < count && i < 5; ++i) {
+        score |= ranks[i] << (16 - 4 * i);
+    }
+    return score;
+}
+
+// Scores the best five card hand that can be made from the given cards. Two
+// cards up to seven cards are accepted; with fewer than five cards only pairs
+// and trips are possible. One number per hand keeps comparisons cheap, which
+// matters because the winning chances play out millions of boards.
+int scoreHand(const Card* cards, int count) {
+    int rankCount[15] = {0};
+    int suitCount[4] = {0};
+    int suitRankMask[4] = {0};
+    int rankMask = 0;
+
+    for (int i = 0; i < count; ++i) {
+        const int rank = rankOf(cards[i]);
+        const int suit = static_cast<int>(cards[i].suit);
+        ++rankCount[rank];
+        ++suitCount[suit];
+        suitRankMask[suit] |= 1 << rank;
+        rankMask |= 1 << rank;
+    }
+
+    // Straight flush first, which also covers the royal flush.
+    for (int suit = 0; suit < 4; ++suit) {
+        if (suitCount[suit] < 5) {
+            continue;
         }
-    }
-    return ranks;
-}
-
-HandValue evaluateFiveCards(const std::array<Card, 5>& hand) {
-    std::vector<int> ranks;
-    ranks.reserve(hand.size());
-    for (const Card& card : hand) {
-        ranks.push_back(rankOf(card));
-    }
-    std::sort(ranks.begin(), ranks.end(), std::greater<int>());
-
-    bool isFlush = true;
-    for (std::size_t i = 1; i < hand.size(); ++i) {
-        if (hand[i].suit != hand[0].suit) {
-            isFlush = false;
-            break;
+        const int high = highestStraight(suitRankMask[suit]);
+        if (high != 0) {
+            const int ranks[1] = {high};
+            return packScore(high == 14 ? RoyalFlush : StraightFlush, ranks, 1);
         }
     }
 
-    std::vector<int> distinct = ranks;
-    distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
-
-    bool isStraight = false;
-    int straightHigh = 0;
-    if (distinct.size() == 5) {
-        if (distinct.front() - distinct.back() == 4) {
-            isStraight = true;
-            straightHigh = distinct.front();
-        } else if (distinct.front() == 14 && distinct[1] == 5 && distinct[2] == 4 &&
-                   distinct[3] == 3 && distinct[4] == 2) {
-            // A, 5, 4, 3, 2. The ace counts as a low card.
-            isStraight = true;
-            straightHigh = 5;
+    // The ranks grouped by how often they occur and then by rank. Bigger groups
+    // come first, so a pair or a trip always sits in front of the kickers.
+    int groups[7][2] = {{0, 0}};
+    int groupCount = 0;
+    for (int rank = 14; rank >= 2; --rank) {
+        if (rankCount[rank] > 0) {
+            groups[groupCount][0] = rankCount[rank];
+            groups[groupCount][1] = rank;
+            ++groupCount;
         }
     }
-
-    HandValue value;
-    const std::vector<std::pair<int, int>> groups = rankGroups({hand.begin(), hand.end()});
-
-    if (isStraight && isFlush) {
-        value.category = (straightHigh == 14) ? RoyalFlush : StraightFlush;
-        value.tiebreak = {straightHigh};
-    } else if (groups.front().first == 4) {
-        value.category = FourOfAKind;
-        value.tiebreak = comparisonRanks({hand.begin(), hand.end()});
-    } else if (groups.front().first == 3 && groups.size() > 1 && groups[1].first == 2) {
-        value.category = FullHouse;
-        value.tiebreak = comparisonRanks({hand.begin(), hand.end()});
-    } else if (isFlush) {
-        value.category = Flush;
-        value.tiebreak = ranks;
-    } else if (isStraight) {
-        value.category = Straight;
-        value.tiebreak = (straightHigh == 5) ? std::vector<int>{5, 4, 3, 2, 1} : ranks;
-    } else if (groups.front().first == 3) {
-        value.category = ThreeOfAKind;
-        value.tiebreak = comparisonRanks({hand.begin(), hand.end()});
-    } else if (groups.front().first == 2 && groups.size() > 1 && groups[1].first == 2) {
-        value.category = TwoPair;
-        value.tiebreak = comparisonRanks({hand.begin(), hand.end()});
-    } else if (groups.front().first == 2) {
-        value.category = OnePair;
-        value.tiebreak = comparisonRanks({hand.begin(), hand.end()});
-    } else {
-        value.category = HighCard;
-        value.tiebreak = ranks;
+    for (int i = 1; i < groupCount; ++i) {
+        const int groupSize = groups[i][0];
+        const int groupRank = groups[i][1];
+        int j = i - 1;
+        while (j >= 0 && groups[j][0] < groupSize) {
+            groups[j + 1][0] = groups[j][0];
+            groups[j + 1][1] = groups[j][1];
+            --j;
+        }
+        groups[j + 1][0] = groupSize;
+        groups[j + 1][1] = groupRank;
     }
-    return value;
+
+    int ranks[5] = {0, 0, 0, 0, 0};
+    for (int i = 0; i < groupCount && i < 5; ++i) {
+        ranks[i] = groups[i][1];
+    }
+
+    if (groups[0][0] == 4) {
+        return packScore(FourOfAKind, ranks, std::min(2, groupCount));
+    }
+    if (groups[0][0] == 3 && groupCount > 1 && groups[1][0] >= 2) {
+        return packScore(FullHouse, ranks, std::min(2, groupCount));
+    }
+    for (int suit = 0; suit < 4; ++suit) {
+        if (suitCount[suit] < 5) {
+            continue;
+        }
+        // The five highest cards of the flush suit.
+        int flushRanks[5] = {0, 0, 0, 0, 0};
+        int found = 0;
+        for (int rank = 14; rank >= 2 && found < 5; --rank) {
+            if ((suitRankMask[suit] & (1 << rank)) != 0) {
+                flushRanks[found] = rank;
+                ++found;
+            }
+        }
+        return packScore(Flush, flushRanks, found);
+    }
+    const int straightHigh = highestStraight(rankMask);
+    if (straightHigh != 0) {
+        const int straightRanks[1] = {straightHigh};
+        return packScore(Straight, straightRanks, 1);
+    }
+    if (groups[0][0] == 3) {
+        return packScore(ThreeOfAKind, ranks, std::min(3, groupCount));
+    }
+    if (groups[0][0] == 2 && groupCount > 1 && groups[1][0] == 2) {
+        return packScore(TwoPair, ranks, std::min(3, groupCount));
+    }
+    if (groups[0][0] == 2) {
+        return packScore(OnePair, ranks, std::min(4, groupCount));
+    }
+    return packScore(HighCard, ranks, std::min(5, groupCount));
 }
 
 struct HandResult {
-    HandValue value;
-    std::vector<Card> cards;  // the cards that make the hand
+    int score = 0;
+    std::vector<Card> cards;
 };
-
-// Fewer than five cards are available, so only pairs, trips and quads can be
-// completed. Straights and flushes are impossible before the river.
-HandResult evaluatePartialHand(const std::vector<Card>& cards) {
-    HandResult result;
-    const std::vector<std::pair<int, int>> groups = rankGroups(cards);
-
-    switch (groups.front().first) {
-        case 4:
-            result.value.category = FourOfAKind;
-            break;
-        case 3:
-            result.value.category = (groups.size() > 1 && groups[1].first >= 2) ? FullHouse
-                                                                               : ThreeOfAKind;
-            break;
-        case 2:
-            result.value.category =
-                (groups.size() > 1 && groups[1].first == 2) ? TwoPair : OnePair;
-            break;
-        default:
-            result.value.category = HighCard;
-            break;
-    }
-
-    result.value.tiebreak = comparisonRanks(cards);
-    result.cards = cards;
-    return result;
-}
 
 void sortByRankDescending(std::vector<Card>& cards) {
     std::sort(cards.begin(), cards.end(), [](const Card& lhs, const Card& rhs) {
@@ -311,39 +296,153 @@ void sortByRankDescending(std::vector<Card>& cards) {
     });
 }
 
-// Picks the strongest five card hand out of all the cards that are in play.
+// Picks the strongest hand out of all the cards that are in play and reports the
+// cards that make it up.
 HandResult findBestHand(const std::vector<Card>& cards) {
-    if (cards.size() < 5) {
-        HandResult result = evaluatePartialHand(cards);
-        sortByRankDescending(result.cards);
-        return result;
-    }
+    HandResult result;
+    result.score = scoreHand(cards.data(), static_cast<int>(cards.size()));
+    result.cards = cards;
 
-    HandResult best;
-    bool hasBest = false;
-    const std::size_t count = cards.size();
-
-    for (std::size_t a = 0; a + 4 < count; ++a) {
-        for (std::size_t b = a + 1; b + 3 < count; ++b) {
-            for (std::size_t c = b + 1; c + 2 < count; ++c) {
-                for (std::size_t d = c + 1; d + 1 < count; ++d) {
-                    for (std::size_t e = d + 1; e < count; ++e) {
-                        const std::array<Card, 5> hand = {cards[a], cards[b], cards[c], cards[d],
-                                                          cards[e]};
-                        const HandValue value = evaluateFiveCards(hand);
-                        if (!hasBest || isStronger(value, best.value)) {
-                            best.value = value;
-                            best.cards.assign(hand.begin(), hand.end());
-                            hasBest = true;
+    if (cards.size() > 5) {
+        const int total = static_cast<int>(cards.size());
+        int best = -1;
+        for (int a = 0; a + 4 < total; ++a) {
+            for (int b = a + 1; b + 3 < total; ++b) {
+                for (int c = b + 1; c + 2 < total; ++c) {
+                    for (int d = c + 1; d + 1 < total; ++d) {
+                        for (int e = d + 1; e < total; ++e) {
+                            const Card combo[5] = {cards[a], cards[b], cards[c], cards[d],
+                                                   cards[e]};
+                            const int score = scoreHand(combo, 5);
+                            if (score > best) {
+                                best = score;
+                                result.cards.assign(combo, combo + 5);
+                            }
                         }
                     }
                 }
             }
         }
+        result.score = best;
     }
 
-    sortByRankDescending(best.cards);
-    return best;
+    sortByRankDescending(result.cards);
+    return result;
+}
+
+struct Equity {
+    long long player1Wins = 0;
+    long long player2Wins = 0;
+    long long ties = 0;
+    long long total = 0;
+};
+
+// Works out the winning chances by playing out every possible way of completing
+// the board, so the numbers are exact instead of sampled.
+Equity computeEquity(const std::vector<Card>& hole1, const std::vector<Card>& hole2,
+                     const std::vector<Card>& community) {
+    bool known[4][15] = {{false}};
+    for (const Card& card : hole1) {
+        known[static_cast<int>(card.suit)][rankOf(card)] = true;
+    }
+    for (const Card& card : hole2) {
+        known[static_cast<int>(card.suit)][rankOf(card)] = true;
+    }
+    for (const Card& card : community) {
+        known[static_cast<int>(card.suit)][rankOf(card)] = true;
+    }
+
+    std::vector<Card> unknown;
+    for (int suit = 0; suit < 4; ++suit) {
+        for (int rank = 2; rank <= 14; ++rank) {
+            if (!known[suit][rank]) {
+                unknown.push_back(Card{static_cast<Rank>(rank), static_cast<Suit>(suit)});
+            }
+        }
+    }
+
+    const int needed = 5 - static_cast<int>(community.size());
+
+    // Both hands hold the board plus the two hole cards of their player.
+    Card hand1[7] = {};
+    Card hand2[7] = {};
+    for (std::size_t i = 0; i < hole1.size(); ++i) {
+        hand1[i] = hole1[i];
+        hand2[i] = hole2[i];
+    }
+    for (std::size_t i = 0; i < community.size(); ++i) {
+        hand1[2 + i] = community[i];
+        hand2[2 + i] = community[i];
+    }
+    const int boardStart = 2 + static_cast<int>(community.size());
+
+    Equity equity;
+    std::vector<int> pick(static_cast<std::size_t>(needed));
+    for (int i = 0; i < needed; ++i) {
+        pick[i] = i;
+    }
+
+    while (true) {
+        for (int i = 0; i < needed; ++i) {
+            const Card card = unknown[static_cast<std::size_t>(pick[i])];
+            hand1[boardStart + i] = card;
+            hand2[boardStart + i] = card;
+        }
+
+        const int score1 = scoreHand(hand1, 7);
+        const int score2 = scoreHand(hand2, 7);
+        if (score1 > score2) {
+            ++equity.player1Wins;
+        } else if (score2 > score1) {
+            ++equity.player2Wins;
+        } else {
+            ++equity.ties;
+        }
+        ++equity.total;
+
+        // Move on to the next combination of unknown cards.
+        int i = needed - 1;
+        while (i >= 0 && pick[i] == static_cast<int>(unknown.size()) - needed + i) {
+            --i;
+        }
+        if (i < 0) {
+            break;
+        }
+        ++pick[i];
+        for (int j = i + 1; j < needed; ++j) {
+            pick[j] = pick[j - 1] + 1;
+        }
+    }
+
+    return equity;
+}
+
+// Turns the counts into whole percentages that add up to exactly 100. Points
+// left over by the rounding go to the largest remainders.
+std::array<int, 3> toPercentages(const Equity& equity) {
+    const long long counts[3] = {equity.player1Wins, equity.player2Wins, equity.ties};
+    std::array<int, 3> percent = {0, 0, 0};
+    long long remainders[3] = {0, 0, 0};
+    long long usedPoints = 0;
+
+    for (int i = 0; i < 3; ++i) {
+        percent[i] = static_cast<int>(counts[i] * 100 / equity.total);
+        remainders[i] = counts[i] * 100 % equity.total;
+        usedPoints += percent[i];
+    }
+
+    while (usedPoints < 100) {
+        int best = 0;
+        for (int i = 1; i < 3; ++i) {
+            if (remainders[i] > remainders[best]) {
+                best = i;
+            }
+        }
+        ++percent[best];
+        remainders[best] = -1;
+        ++usedPoints;
+    }
+    return percent;
 }
 
 class Deck {
@@ -386,30 +485,85 @@ void printCardList(const std::string& title, const std::vector<Card>& cards) {
     std::cout << '\n';
 }
 
-void printStreet(const std::string& street, const std::vector<Card>& holeCards,
-                 const std::vector<Card>& communityCards, const std::string& handTitle) {
+std::string cardList(const std::vector<Card>& cards) {
+    std::string text;
+    for (std::size_t i = 0; i < cards.size(); ++i) {
+        if (i > 0) {
+            text += ", ";
+        }
+        text += cardName(cards[i]);
+    }
+    return text;
+}
+
+std::vector<Card> handWithBoard(const std::vector<Card>& holeCards,
+                                const std::vector<Card>& communityCards) {
+    std::vector<Card> all = holeCards;
+    all.insert(all.end(), communityCards.begin(), communityCards.end());
+    return all;
+}
+
+void printPlayer(const std::string& name, const std::vector<Card>& holeCards,
+                 const std::vector<Card>& communityCards) {
+    printCardList(name + " HOLE CARDS", holeCards);
+
+    const HandResult best = findBestHand(handWithBoard(holeCards, communityCards));
+    std::cout << name << " BEST HAND\n";
+    std::cout << "  " << categoryName(categoryOf(best.score)) << '\n';
+    std::cout << "  Made with " << cardList(best.cards) << "\n\n";
+}
+
+void printWinChance(const Equity& equity) {
+    const std::array<int, 3> percent = toPercentages(equity);
+    std::cout << "WIN CHANCE\n";
+    std::cout << "  Player 1: " << percent[0] << "%\n";
+    std::cout << "  Player 2: " << percent[1] << "%\n";
+    std::cout << "  Tie: " << percent[2] << "%\n\n";
+}
+
+void printStreet(const std::string& street, const std::vector<Card>& hole1,
+                 const std::vector<Card>& hole2, const std::vector<Card>& communityCards) {
     std::cout << street << "\n\n";
 
     if (!communityCards.empty()) {
         printCardList("COMMUNITY CARDS", communityCards);
     }
-    printCardList("YOUR HOLE CARDS", holeCards);
-
-    std::vector<Card> allCards = holeCards;
-    allCards.insert(allCards.end(), communityCards.begin(), communityCards.end());
-    const HandResult best = findBestHand(allCards);
-
-    std::cout << handTitle << '\n';
-    std::cout << "  " << categoryName(best.value.category) << '\n';
-    std::cout << "  Made with ";
-    for (std::size_t i = 0; i < best.cards.size(); ++i) {
-        if (i > 0) {
-            std::cout << ", ";
-        }
-        std::cout << cardName(best.cards[i]);
-    }
-    std::cout << "\n\n";
+    printPlayer("PLAYER 1", hole1, communityCards);
+    printPlayer("PLAYER 2", hole2, communityCards);
+    printWinChance(computeEquity(hole1, hole2, communityCards));
     std::cout.flush();
+}
+
+// The river is complete, so the winner of the showdown is known exactly.
+void printResult(const std::vector<Card>& hole1, const std::vector<Card>& hole2,
+                 const std::vector<Card>& communityCards) {
+    const std::vector<Card> all1 = handWithBoard(hole1, communityCards);
+    const std::vector<Card> all2 = handWithBoard(hole2, communityCards);
+    const int score1 = scoreHand(all1.data(), static_cast<int>(all1.size()));
+    const int score2 = scoreHand(all2.data(), static_cast<int>(all2.size()));
+
+    std::cout << "RESULT\n";
+    if (score1 > score2) {
+        std::cout << "  Player 1 wins with " << categoryName(categoryOf(score1)) << "\n\n";
+    } else if (score2 > score1) {
+        std::cout << "  Player 2 wins with " << categoryName(categoryOf(score2)) << "\n\n";
+    } else {
+        std::cout << "  It is a tie with " << categoryName(categoryOf(score1)) << "\n\n";
+    }
+}
+
+// Stops until the player presses Enter, so that every step is dealt on demand.
+// When the input is not interactive the end of input is treated as Enter and the
+// simulation keeps running instead of blocking.
+void waitForEnter(const std::string& message) {
+    std::cout << message;
+    std::cout.flush();
+
+    std::string line;
+    if (!std::getline(std::cin, line)) {
+        std::cout << '\n';
+        return;
+    }
 }
 
 // The program only ends when the player types q, so the finished hand stays on
@@ -440,20 +594,6 @@ void waitForQuit() {
     std::cout << '\n';
 }
 
-// Stops until the player presses Enter, so that every step is dealt on demand.
-// When the input is not interactive the end of input is treated as Enter and
-// the simulation keeps running instead of blocking.
-void waitForEnter(const std::string& message) {
-    std::cout << message;
-    std::cout.flush();
-
-    std::string line;
-    if (!std::getline(std::cin, line)) {
-        std::cout << '\n';
-        return;
-    }
-}
-
 }  // namespace
 
 int main() {
@@ -471,39 +611,46 @@ int main() {
     Deck deck;
     deck.shuffle(engine);
 
-    std::vector<Card> holeCards;
+    std::vector<Card> hole1;
+    std::vector<Card> hole2;
     std::vector<Card> communityCards;
 
-    std::cout << "TEXAS HOLDEM   SINGLE PLAYER SIMULATION\n\n";
-    std::cout << "One player only. The deck is shuffled and cards are dealt\n";
-    std::cout << "in the usual order: preflop, flop, turn and river.\n";
+    std::cout << "TEXAS HOLDEM   TWO PLAYER SIMULATION\n\n";
+    std::cout << "Two players share one shuffled deck and both hole cards are\n";
+    std::cout << "known. Every possible way of completing the board is played\n";
+    std::cout << "out, so the winning chances below are exact.\n";
     std::cout << "Press Enter to move to the next step.\n\n";
 
-    waitForEnter("Press Enter to receive your two hole cards: ");
-    holeCards.push_back(deck.deal());
-    holeCards.push_back(deck.deal());
+    waitForEnter("Press Enter to deal the two hole cards: ");
+    hole1.push_back(deck.deal());
+    hole1.push_back(deck.deal());
+    hole2.push_back(deck.deal());
+    hole2.push_back(deck.deal());
     std::cout << "\n\n";
-    printStreet("PREFLOP", holeCards, communityCards, "YOUR BEST HAND");
+    printStreet("PREFLOP", hole1, hole2, communityCards);
 
     waitForEnter("Press Enter to see the flop: ");
     communityCards.push_back(deck.deal());
     communityCards.push_back(deck.deal());
     communityCards.push_back(deck.deal());
     std::cout << "\n\n";
-    printStreet("FLOP", holeCards, communityCards, "BEST HAND SO FAR");
+    printStreet("FLOP", hole1, hole2, communityCards);
 
     waitForEnter("Press Enter to see the turn: ");
     communityCards.push_back(deck.deal());
     std::cout << "\n\n";
-    printStreet("TURN", holeCards, communityCards, "BEST HAND SO FAR");
+    printStreet("TURN", hole1, hole2, communityCards);
 
     waitForEnter("Press Enter to see the river: ");
     communityCards.push_back(deck.deal());
     std::cout << "\n\n";
-    printStreet("RIVER", holeCards, communityCards, "FINAL BEST HAND");
+    printStreet("RIVER", hole1, hole2, communityCards);
+
+    printResult(hole1, hole2, communityCards);
 
     std::cout << "END OF HAND\n";
-    std::cout << "All cards stay on screen so the hand can be reviewed.\n";
+    std::cout << "All cards and percentages stay on screen so the hand can be\n";
+    std::cout << "reviewed.\n";
 
     waitForQuit();
 
