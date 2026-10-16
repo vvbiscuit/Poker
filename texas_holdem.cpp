@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstddef>
 #include <iostream>
 #include <random>
@@ -557,6 +558,21 @@ class Deck
         return cards_[nextCard_++];
     }
 
+    // Takes a card out of the cards that are still to be dealt, so that the
+    // board can never repeat a card that was chosen by hand.
+    void takeOut(const Card &card)
+    {
+        for (std::size_t i = nextCard_; i < cards_.size(); ++i)
+        {
+            if (cards_[i].rank == card.rank && cards_[i].suit == card.suit)
+            {
+                std::swap(cards_[i], cards_[nextCard_]);
+                ++nextCard_;
+                return;
+            }
+        }
+    }
+
   private:
     std::vector<Card> cards_;
     std::size_t nextCard_ = 0;
@@ -667,6 +683,196 @@ void printResult(const std::vector<Card> &hole1, const std::vector<Card> &hole2,
     }
 }
 
+// Turns text such as AS, 10h or td into a card. Returns false when the text is
+// not a card.
+bool parseCard(const std::string &text, Card &card)
+{
+    if (text.size() < 2)
+    {
+        return false;
+    }
+
+    Suit suit = Suit::Spades;
+    switch (std::toupper(static_cast<unsigned char>(text.back())))
+    {
+    case 'S':
+        suit = Suit::Spades;
+        break;
+    case 'H':
+        suit = Suit::Hearts;
+        break;
+    case 'D':
+        suit = Suit::Diamonds;
+        break;
+    case 'C':
+        suit = Suit::Clubs;
+        break;
+    default:
+        return false;
+    }
+
+    const std::string rankText = text.substr(0, text.size() - 1);
+    int rank = 0;
+    if (rankText == "10")
+    {
+        rank = 10;
+    }
+    else if (rankText.size() == 1 && rankText[0] >= '2' && rankText[0] <= '9')
+    {
+        rank = rankText[0] - '0';
+    }
+    else if (rankText.size() == 1)
+    {
+        switch (std::toupper(static_cast<unsigned char>(rankText[0])))
+        {
+        case 'T':
+            rank = 10;
+            break;
+        case 'J':
+            rank = 11;
+            break;
+        case 'Q':
+            rank = 12;
+            break;
+        case 'K':
+            rank = 13;
+            break;
+        case 'A':
+            rank = 14;
+            break;
+        default:
+            return false;
+        }
+    }
+    else
+    {
+        return false;
+    }
+
+    card = Card{static_cast<Rank>(rank), suit};
+    return true;
+}
+
+// Splits entered text into card tokens. Spaces, tabs, commas and slashes all
+// separate one card from the next.
+std::vector<std::string> splitCardTokens(const std::string &text)
+{
+    std::vector<std::string> tokens;
+    std::string current;
+    for (const char ch : text)
+    {
+        if (ch == ' ' || ch == '\t' || ch == ',' || ch == '/')
+        {
+            if (!current.empty())
+            {
+                tokens.push_back(current);
+                current.clear();
+            }
+            continue;
+        }
+        current += ch;
+    }
+    if (!current.empty())
+    {
+        tokens.push_back(current);
+    }
+    return tokens;
+}
+
+enum class HoleCards
+{
+    Random,
+    Manual,
+    Quit
+};
+
+// Asks for the hole cards of both players. An empty line deals random cards, q
+// leaves the program, and any other input has to be four cards without a
+// repeated card. The first two cards go to player 1.
+HoleCards askHoleCards(std::vector<Card> &hole1, std::vector<Card> &hole2)
+{
+    const std::string prompt = "\nHole cards (for example AS KH 10D 2C), or "
+                               "press Enter for random cards: ";
+
+    std::string line;
+    while (true)
+    {
+        std::cout << prompt;
+        std::cout.flush();
+        if (!std::getline(std::cin, line))
+        {
+            // The end of input is treated as pressing Enter, so a piped run
+            // plays one hand with random cards and then stops at the end of the
+            // hand instead of stopping here.
+            std::cout << '\n';
+            return HoleCards::Random;
+        }
+
+        const std::size_t first = line.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos)
+        {
+            return HoleCards::Random;
+        }
+        const std::size_t last = line.find_last_not_of(" \t\r\n");
+        const std::string trimmed = line.substr(first, last - first + 1);
+        if (trimmed == "q" || trimmed == "Q")
+        {
+            return HoleCards::Quit;
+        }
+
+        const std::vector<std::string> tokens = splitCardTokens(trimmed);
+        if (tokens.size() != 4)
+        {
+            std::cout << "  Enter exactly four cards, two for each player.\n";
+            continue;
+        }
+
+        std::vector<Card> cards;
+        for (const std::string &token : tokens)
+        {
+            Card card{};
+            if (!parseCard(token, card))
+            {
+                std::cout << "  Not a card: " << token
+                          << "  (use a rank and a suit, for example AS KH 10D "
+                             "2C)\n";
+                cards.clear();
+                break;
+            }
+            cards.push_back(card);
+        }
+        if (cards.size() != 4)
+        {
+            continue;
+        }
+
+        std::string repeated;
+        for (std::size_t i = 0; i < cards.size() && repeated.empty(); ++i)
+        {
+            for (std::size_t j = i + 1; j < cards.size(); ++j)
+            {
+                if (cards[i].rank == cards[j].rank &&
+                    cards[i].suit == cards[j].suit)
+                {
+                    repeated = cardName(cards[i]);
+                    break;
+                }
+            }
+        }
+        if (!repeated.empty())
+        {
+            std::cout << "  " << repeated
+                      << " was entered more than once. Every card can be used "
+                         "only once.\n";
+            continue;
+        }
+
+        hole1 = {cards[0], cards[1]};
+        hole2 = {cards[2], cards[3]};
+        return HoleCards::Manual;
+    }
+}
+
 // Stops until the player presses Enter, so that every step is dealt on demand.
 // When the input is not interactive the end of input is treated as Enter and
 // the simulation keeps running instead of blocking.
@@ -735,8 +941,14 @@ int main()
         << "Two players share one shuffled deck and both hole cards are\n";
     std::cout
         << "known. Every possible way of completing the board is played\n";
-    std::cout << "out, so the winning chances below are exact.\n";
-    std::cout << "Press Enter to move to the next step.\n";
+    std::cout << "out, so the winning chances below are exact.\n\n";
+    std::cout
+        << "Enter the hole cards yourself before each hand: four cards,\n";
+    std::cout << "player 1 first, for example AS KH 10D 2C, using the ranks\n";
+    std::cout << "2 to 10, J, Q, K, A and the suits S, H, D, C. Press Enter\n";
+    std::cout << "instead to deal random cards. A repeated card is refused\n";
+    std::cout << "with a message and asked for again.\n";
+    std::cout << "Press Enter to move to the next step after that.\n";
 
     bool playAgain = true;
     while (playAgain)
@@ -748,11 +960,30 @@ int main()
         std::vector<Card> hole2;
         std::vector<Card> communityCards;
 
-        waitForEnter("\nPress Enter to deal the two hole cards: ");
-        hole1.push_back(deck.deal());
-        hole1.push_back(deck.deal());
-        hole2.push_back(deck.deal());
-        hole2.push_back(deck.deal());
+        const HoleCards input = askHoleCards(hole1, hole2);
+        if (input == HoleCards::Quit)
+        {
+            break;
+        }
+        if (input == HoleCards::Random)
+        {
+            hole1.push_back(deck.deal());
+            hole1.push_back(deck.deal());
+            hole2.push_back(deck.deal());
+            hole2.push_back(deck.deal());
+        }
+        else
+        {
+            // The chosen cards leave the deck, so the board cannot repeat them.
+            for (const Card &card : hole1)
+            {
+                deck.takeOut(card);
+            }
+            for (const Card &card : hole2)
+            {
+                deck.takeOut(card);
+            }
+        }
         std::cout << "\n\n";
         printStreet("PREFLOP", hole1, hole2, communityCards);
 
