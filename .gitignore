@@ -1,0 +1,24 @@
+# Build outputs
+*.exe
+build/
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+*.ilk
+*.pdb
+*.exp
+*.idb
+
+# Editor configuration that is specific to this machine.
+# Use "git add -f" if a shared copy of .vscode is ever wanted.
+.vscode/
+*.code-workspace
+
+# OS and shell noise
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -54,10 +54,23 @@ the program, and any other input just asks again.
 If the input is not interactive (for example when the output is piped) the end
 of input works like pressing Enter and the simulation runs to the end.
 
-Build with MinGW g++:
+Build with the script (Windows):
+  build.cmd          optimized build, writes texas_holdem.exe
+  build.cmd debug    build with debug info, writes build\Debug\outDebug.exe
+  build.cmd run      optimized build and then runs the program
+  build.cmd clean    removes the build outputs
+
+The script takes g++ or clang++ from PATH first and then from the usual
+MinGW-w64 and LLVM folders, so it works from cmd, from PowerShell and from a
+double click. A build leaves the working directory clean, and every mode reports
+the file it wrote and returns a non zero exit code when the build fails. The
+debug output path is the one .vscode\launch.json expects, so build.cmd debug
+followed by the debugger works without further setup.
+
+Build by hand with MinGW g++:
   g++ -std=c++17 -Wall -Wextra -O2 -o texas_holdem.exe texas_holdem.cpp
 
-Build with MSVC:
+Build by hand with MSVC:
   cl /std:c++17 /W4 /EHsc /Fe:texas_holdem.exe texas_holdem.cpp
 
 Run:
