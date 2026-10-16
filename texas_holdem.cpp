@@ -9,8 +9,8 @@
 // played out and the results are counted, so no sampling error is involved.
 //
 // Every step is driven by the keyboard: pressing Enter receives the hole cards
-// and shows the flop, the turn and the river, and typing q leaves the program
-// once the hand has been reviewed.
+// and shows the flop, the turn and the river. At the end of a hand an empty line
+// deals the next hand and typing q ends the program.
 //
 // All output text is English. Suits are shown as spade, heart, diamond and club
 // symbols, ranks use digits and J, Q, K, A, and no Chinese text is printed.
@@ -566,11 +566,12 @@ void waitForEnter(const std::string& message) {
     }
 }
 
-// The program only ends when the player types q, so the finished hand stays on
-// screen for as long as it is being reviewed. Any other input asks again, and
-// the end of input also ends the program.
-void waitForQuit() {
-    const std::string prompt = "\nType q and press Enter to exit: ";
+// Waits at the end of a hand. An empty line deals the next hand, q ends the
+// program, and any other input asks again. The end of input also ends the
+// program. Returns true when another hand should be dealt.
+bool askPlayAgain() {
+    const std::string prompt =
+        "\nPress Enter to play another hand, or type q and press Enter to exit: ";
     std::cout << prompt;
     std::cout.flush();
 
@@ -578,20 +579,19 @@ void waitForQuit() {
     while (std::getline(std::cin, line)) {
         const std::size_t first = line.find_first_not_of(" \t\r\n");
         if (first == std::string::npos) {
-            std::cout << prompt;
-            std::cout.flush();
-            continue;
+            std::cout << "\n\n";
+            return true;
         }
         const std::size_t last = line.find_last_not_of(" \t\r\n");
         const std::string trimmed = line.substr(first, last - first + 1);
         if (trimmed == "q" || trimmed == "Q") {
-            std::cout << "Goodbye.\n";
-            return;
+            return false;
         }
         std::cout << prompt;
         std::cout.flush();
     }
     std::cout << '\n';
+    return false;
 }
 
 }  // namespace
@@ -608,51 +608,56 @@ int main() {
     std::random_device device;
     std::mt19937 engine(device());
 
-    Deck deck;
-    deck.shuffle(engine);
-
-    std::vector<Card> hole1;
-    std::vector<Card> hole2;
-    std::vector<Card> communityCards;
-
     std::cout << "TEXAS HOLDEM   TWO PLAYER SIMULATION\n\n";
     std::cout << "Two players share one shuffled deck and both hole cards are\n";
     std::cout << "known. Every possible way of completing the board is played\n";
     std::cout << "out, so the winning chances below are exact.\n";
-    std::cout << "Press Enter to move to the next step.\n\n";
+    std::cout << "Press Enter to move to the next step.\n";
 
-    waitForEnter("Press Enter to deal the two hole cards: ");
-    hole1.push_back(deck.deal());
-    hole1.push_back(deck.deal());
-    hole2.push_back(deck.deal());
-    hole2.push_back(deck.deal());
-    std::cout << "\n\n";
-    printStreet("PREFLOP", hole1, hole2, communityCards);
+    bool playAgain = true;
+    while (playAgain) {
+        Deck deck;
+        deck.shuffle(engine);
 
-    waitForEnter("Press Enter to see the flop: ");
-    communityCards.push_back(deck.deal());
-    communityCards.push_back(deck.deal());
-    communityCards.push_back(deck.deal());
-    std::cout << "\n\n";
-    printStreet("FLOP", hole1, hole2, communityCards);
+        std::vector<Card> hole1;
+        std::vector<Card> hole2;
+        std::vector<Card> communityCards;
 
-    waitForEnter("Press Enter to see the turn: ");
-    communityCards.push_back(deck.deal());
-    std::cout << "\n\n";
-    printStreet("TURN", hole1, hole2, communityCards);
+        waitForEnter("\nPress Enter to deal the two hole cards: ");
+        hole1.push_back(deck.deal());
+        hole1.push_back(deck.deal());
+        hole2.push_back(deck.deal());
+        hole2.push_back(deck.deal());
+        std::cout << "\n\n";
+        printStreet("PREFLOP", hole1, hole2, communityCards);
 
-    waitForEnter("Press Enter to see the river: ");
-    communityCards.push_back(deck.deal());
-    std::cout << "\n\n";
-    printStreet("RIVER", hole1, hole2, communityCards);
+        waitForEnter("Press Enter to see the flop: ");
+        communityCards.push_back(deck.deal());
+        communityCards.push_back(deck.deal());
+        communityCards.push_back(deck.deal());
+        std::cout << "\n\n";
+        printStreet("FLOP", hole1, hole2, communityCards);
 
-    printResult(hole1, hole2, communityCards);
+        waitForEnter("Press Enter to see the turn: ");
+        communityCards.push_back(deck.deal());
+        std::cout << "\n\n";
+        printStreet("TURN", hole1, hole2, communityCards);
 
-    std::cout << "END OF HAND\n";
-    std::cout << "All cards and percentages stay on screen so the hand can be\n";
-    std::cout << "reviewed.\n";
+        waitForEnter("Press Enter to see the river: ");
+        communityCards.push_back(deck.deal());
+        std::cout << "\n\n";
+        printStreet("RIVER", hole1, hole2, communityCards);
 
-    waitForQuit();
+        printResult(hole1, hole2, communityCards);
+
+        std::cout << "END OF HAND\n";
+        std::cout << "All cards and percentages stay on screen so the hand can be\n";
+        std::cout << "reviewed.\n";
+
+        playAgain = askPlayAgain();
+    }
+
+    std::cout << "Goodbye.\n";
 
 #ifdef _WIN32
     if (previousCodePage != 0) {

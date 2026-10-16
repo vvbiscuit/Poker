@@ -39,13 +39,17 @@ before each step:
   2. Press Enter to see the flop (first three community cards).
   3. Press Enter to see the turn (fourth community card).
   4. Press Enter to see the river (fifth community card).
-  5. Type q to exit.
+
+At the end of the hand:
+
+  5. Press Enter for a new hand (a fresh shuffle and two new hole cards for each
+     player) or type q to exit.
 
 After each step the community cards, both hands, both best hands and the winning
 chances are printed again. When the hand is over the program prints RESULT with
-the winner or a tie, then END OF HAND, and keeps everything on screen. It then
-asks for q and only ends after q has been typed, so the result can be reviewed
-for as long as needed. Any other input just asks again.
+the winner or a tie, then END OF HAND, and keeps everything on screen. The end
+of a hand asks for an empty line or q: an empty line deals the next hand, q ends
+the program, and any other input just asks again.
 
 If the input is not interactive (for example when the output is piped) the end
 of input works like pressing Enter and the simulation runs to the end.
